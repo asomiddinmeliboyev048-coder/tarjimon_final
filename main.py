@@ -8,6 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
+from aiohttp import web
 
 from config import BOT_TOKEN
 from utils.database import Database
@@ -18,10 +19,35 @@ from utils.logger import logger, log_error
 os.makedirs("logs", exist_ok=True)
 os.makedirs("cache/voice", exist_ok=True)
 
+# Get port from environment variable (Render sets this) or default to 8080
+PORT = int(os.getenv('PORT', 8080))
 
-async def main():
-    """Main bot entry point - optimized for high concurrency"""
 
+async def health_check(request):
+    """Health check endpoint for UptimeRobot and Render"""
+    return web.Response(text="Bot is running!")
+
+
+async def run_web_server():
+    """Run aiohttp web server for keeping the service alive"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    logger.info(f"Web server started on port {PORT}")
+    
+    # Keep the server running
+    while True:
+        await asyncio.sleep(3600)  # Sleep for 1 hour, effectively forever
+
+
+async def run_bot():
+    """Run the Telegram bot with polling"""
     try:
         Database()
         logger.info("Database initialized successfully")
@@ -56,7 +82,7 @@ async def main():
         await dp.start_polling(
             bot,
             skip_updates=True,  # Skip pending updates on startup
-            handle_signals=True,
+            handle_signals=False,  # Disable signal handling since we run in parallel with web server
             close_bot_session=True,
             timeout=30,  # Long polling timeout
             relaxation=0.1,  # Small delay between requests
@@ -78,6 +104,18 @@ async def main():
                 logger.info("Bot session closed")
             except Exception as e:
                 logger.error(f"Error closing bot session: {e}")
+
+
+async def main():
+    """Main entry point - run bot and web server in parallel"""
+    logger.info("Starting bot and web server in parallel...")
+    
+    # Create tasks for both services
+    bot_task = asyncio.create_task(run_bot())
+    web_task = asyncio.create_task(run_web_server())
+    
+    # Run both tasks concurrently
+    await asyncio.gather(bot_task, web_task)
 
 
 if __name__ == "__main__":
