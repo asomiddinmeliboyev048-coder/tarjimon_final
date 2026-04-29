@@ -1,13 +1,10 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import CHANNEL_USERNAME
+from config import CHANNEL_LINK
 
 def get_subscription_keyboard():
-    channel_username = CHANNEL_USERNAME.lstrip("@").strip()
-    channel_url = f"https://t.me/{channel_username}"
-
     keyboard = [
         # Obuna bo'lish tugmasiga kanal stikeri qo'shildi
-        [InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=channel_url)],
+        [InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=CHANNEL_LINK)],
         # Tekshirish tugmasiga tasdiq belgisi qo'shildi
         [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_subscription")]
     ]

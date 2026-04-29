@@ -7,8 +7,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "meliboyevdev")
-CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME}"
+
+# Channel configuration from environment variables
+# CHANNEL_USER: username without @ (e.g., 'meliboyevdev')
+# CHANNEL_LINK: full channel URL (e.g., 'https://t.me/meliboyevdev')
+CHANNEL_USER = os.getenv("CHANNEL_USER", "meliboyevdev")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", f"https://t.me/{CHANNEL_USER}")
+
+# Legacy support for old variable names
+CHANNEL_USERNAME = CHANNEL_USER
 
 # Database
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.db")
