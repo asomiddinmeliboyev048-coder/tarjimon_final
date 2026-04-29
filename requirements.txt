@@ -1,0 +1,7 @@
+aiogram==3.27.0
+edge-tts==7.2.8
+gTTS==2.5.4
+python-dotenv==1.2.2
+deep-translator==1.11.4
+langdetect==1.0.9
+aiohttp==3.13.5

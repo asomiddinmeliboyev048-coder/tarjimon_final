@@ -1,0 +1,62 @@
+{
+  "users": {
+    "7171330738": {
+      "username": "asomiddinmeliboyev",
+      "first_name": "Meliboyev",
+      "joined_at": "2026-04-29T08:12:23.028362",
+      "last_active": "2026-04-29T09:24:55.490916",
+      "language": "uz"
+    },
+    "7975576908": {
+      "username": null,
+      "first_name": "Jasur",
+      "joined_at": "2026-04-29T09:12:06.094135",
+      "last_active": "2026-04-29T09:17:22.075519",
+      "language": "ru"
+    }
+  },
+  "translations": {
+    "1": {
+      "user_id": "7171330738",
+      "text": "what's up Sarvar where are you?",
+      "translated_text": "nima bo'ldi Sarvar qayerdasan?",
+      "source_lang": "uz",
+      "target_lang": "uz",
+      "date": "2026-04-29",
+      "timestamp": "2026-04-29T08:31:46.268134"
+    },
+    "2": {
+      "user_id": "7975576908",
+      "text": "Bugun ob havo qanday",
+      "translated_text": "Какая сегодня погода",
+      "source_lang": "uz",
+      "target_lang": "ru",
+      "date": "2026-04-29",
+      "timestamp": "2026-04-29T09:17:30.888332"
+    },
+    "3": {
+      "user_id": "7171330738",
+      "text": "Salom Sarvar nima gap",
+      "translated_text": "Hi Sarwar, what's up?",
+      "source_lang": "uz",
+      "target_lang": "en",
+      "date": "2026-04-29",
+      "timestamp": "2026-04-29T09:22:28.885396"
+    },
+    "4": {
+      "user_id": "7171330738",
+      "text": "Cinematic profile shot of a man with short brown hair and a light beard, looking toward the right with a stoic expression. His face and neck feature intricate, translucent cybernetic enhancements where the skin appears as a fine, white synthetic mesh or 3D-printed lattice, revealing subtle mechanical components underneath. The entire scene is layered with heavy, horizontal motion-blur streaks in shades of teal, yellow, and white, creating a \"speed-light\" effect. These colorful blurs must appear both behind the man and superimposed over his body and face, behaving like reflections on a glass mirror. The man is wearing a simple black crew-neck t-shirt with a small blue logo on the chest. The lighting is moody and futuristic, with a shallow depth of field, highlighting the texture of the robotic mesh on his neck and cheek. --ar 4:5",
+      "translated_text": "Qisqa jigarrang sochli va och soqolli erkakning o'ngga qaragan surati. Uning yuzi va bo'yni nozik, oq sintetik to'r yoki 3D-bosma panjara kabi ko'rinadigan, ostidagi nozik mexanik qismlarni ochib beradigan murakkab, shaffof kibernetik yaxshilanishlarga ega. Butun sahna ko‘k, sariq va oq rangdagi og‘ir, gorizontal harakatlanuvchi xira chiziqlar bilan qoplangan bo‘lib, “tezlik-yorug‘lik” effektini yaratadi. Bu rang-barang xiraliklar erkakning orqasida paydo bo'lishi va uning tanasi va yuziga qo'shilib, shisha oynadagi aks kabi harakat qilishi kerak. Erkakning ko'kragida kichkina ko'k logotipli oddiy qora ko'ylak kiygan. Yoritish kayfiyatli va futuristik bo'lib, sayoz maydon chuqurligi bilan bo'yin va yonoqdagi robot to'rning tuzilishini ta'kidlaydi. --ar 4:5",
+      "source_lang": "uz",
+      "target_lang": "uz",
+      "date": "2026-04-29",
+      "timestamp": "2026-04-29T09:25:01.428991"
+    }
+  },
+  "stats": {
+    "total_users": 2,
+    "active_users": 0,
+    "total_translations": 4,
+    "today_translations": 0
+  }
+}
