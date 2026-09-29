@@ -930,4 +930,3 @@ except Exception as e:
             "Iltimos, qayta urinib ko'ring yoki "
             "boshqa matn yuboring."
         )
-```
