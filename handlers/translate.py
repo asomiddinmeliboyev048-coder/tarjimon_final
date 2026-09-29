@@ -6,6 +6,11 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.exceptions import TelegramBadRequest
 from deep_translator import GoogleTranslator
+from deep_translator.exceptions import (
+    TranslationNotFound,
+    RequestError,
+    LanguageNotSupportedException
+)
 
 from config import ADMIN_ID, LANGUAGES, DEFAULT_SOURCE_LANG, TRANSLATION_TIMEOUT
 from utils.database import Database
