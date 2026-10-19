@@ -57,90 +57,79 @@ text_translation_cache = {}
 # GOOGLE RATE LIMIT PROTECTION
 # ============================================================
 
-# Google 5 request/second limitidan uzoqroq turish uchun
-# requestlar orasida kamida 0.8 sekund interval.
-GOOGLE_REQUEST_INTERVAL = 0.8
-
-# Bir vaqtda faqat bitta Google request ishlaydi.
+# Requests are deliberately serialized. This protects one running
+# process, but cannot coordinate separate Render/local instances.
+GOOGLE_REQUEST_INTERVAL = 1.5
 google_request_lock = asyncio.Lock()
-
-# Oxirgi Google request vaqti.
+google_translation_lock = asyncio.Lock()
 last_google_request_time = 0.0
 
 
 async def wait_for_google_rate_limit():
-    """
-    Google Translate requestlari orasida xavfsiz interval saqlaydi.
-
-    Bu bot bir nechta foydalanuvchidan bir vaqtning o'zida
-    request olsa ham Google'ga requestlarni tartibli yuboradi.
-    """
+    """Keep a minimum interval between Google requests."""
     global last_google_request_time
 
-    async with google_request_lock:
-        now = time.monotonic()
-        elapsed = now - last_google_request_time
+    now = time.monotonic()
+    elapsed = now - last_google_request_time
+    if elapsed < GOOGLE_REQUEST_INTERVAL:
+        await asyncio.sleep(GOOGLE_REQUEST_INTERVAL - elapsed)
 
-        if elapsed < GOOGLE_REQUEST_INTERVAL:
-            await asyncio.sleep(
-                GOOGLE_REQUEST_INTERVAL - elapsed
-            )
-
-        last_google_request_time = time.monotonic()
+    last_google_request_time = time.monotonic()
 
 
 async def run_google_translation(translator, text):
     """
-    GoogleTranslator.translate() ni rate-limit va retry
-    himoyasi bilan ishga tushiradi.
-
-    Retry:
-        1-urinish -> darhol
-        2-urinish -> 2 soniya
-        3-urinish -> 5 soniya
-        4-urinish -> 10 soniya
+    Serialize Google requests and handle rate-limit exceptions.
+    A 429/too-many-requests response gets one delayed retry only.
+    Repeated rapid retries can make provider-side blocking worse.
     """
-    retry_delays = [0, 2, 5, 10]
+    global last_google_request_time
+
+    max_attempts = 2
     last_error = None
 
-    for attempt, delay in enumerate(retry_delays, start=1):
-        if delay > 0:
-            await asyncio.sleep(delay)
-
+    for attempt in range(1, max_attempts + 1):
         try:
-            await wait_for_google_rate_limit()
-
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    translator.translate,
-                    text
-                ),
-                timeout=TRANSLATION_TIMEOUT
-            )
+            # Keep the lock for the entire network call, not only
+            # while waiting, so concurrent users cannot overlap calls.
+            async with google_translation_lock:
+                await wait_for_google_rate_limit()
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(translator.translate, text),
+                    timeout=TRANSLATION_TIMEOUT
+                )
+                last_google_request_time = time.monotonic()
 
             return result
 
         except asyncio.TimeoutError:
             raise
 
-        except (
-            RequestError,
-            ConnectionError,
-            OSError
-        ) as e:
+        except Exception as e:
             last_error = e
-
-            log_error(
-                f"Google translation request failed "
-                f"(attempt {attempt}/{len(retry_delays)}): {e}"
+            error_text = str(e).lower()
+            rate_limited = (
+                "too many requests" in error_text
+                or "429" in error_text
+                or "rate limit" in error_text
+                or "too many request" in error_text
             )
 
-            if attempt == len(retry_delays):
+            log_error(
+                f"Google translation failed "
+                f"(attempt {attempt}/{max_attempts}; "
+                f"rate_limited={rate_limited}): {e}"
+            )
+
+            if attempt >= max_attempts:
                 raise
+
+            # Wait longer for rate-limit responses; use a shorter
+            # delay for transient connection errors.
+            await asyncio.sleep(30 if rate_limited else 5)
 
     if last_error:
         raise last_error
-
     return None
 
 
@@ -650,12 +639,26 @@ async def handle_text_translation(
                     user_id
                 )
 
-                await loading_msg.edit_text(
-                    "❌ Tarjimada xatolik yuz berdi.\n"
-                    "Iltimos, qayta urinib ko'ring yoki "
-                    "boshqa matn yuboring."
-                )
+                error_text = str(e).lower()
+                if (
+                    "too many requests" in error_text
+                    or "429" in error_text
+                    or "rate limit" in error_text
+                    or "too many request" in error_text
+                ):
+                    user_message = (
+                        "⏳ Tarjima xizmati hozircha so'rovlarni "
+                        "cheklayapti. Iltimos, 1-2 daqiqadan keyin "
+                        "qayta urinib ko'ring."
+                    )
+                else:
+                    user_message = (
+                        "❌ Tarjimada xatolik yuz berdi.\n"
+                        "Iltimos, qayta urinib ko'ring yoki "
+                        "boshqa matn yuboring."
+                    )
 
+                await loading_msg.edit_text(user_message)
                 return
 
             # =================================================
