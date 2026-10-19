@@ -686,3 +686,26 @@ async def handle_text_translation(
                 "Iltimos, qayta urinib ko'ring yoki "
                 "boshqa matn yuboring."
             )
+            def get_cache_stats() -> dict:
+    """Tarjima keshi va statistikasini qaytaradi."""
+    now = time.time()
+
+    valid_entries = sum(
+        1
+        for item in translation_cache.values()
+        if isinstance(item, dict)
+        and now - item.get("timestamp", 0) < CACHE_TTL
+    )
+
+    return {
+        **performance_stats,
+        "cache_size": valid_entries,
+        "cache_ttl_seconds": CACHE_TTL,
+    }
+
+
+def clear_translation_cache() -> int:
+    """Tarjima keshini tozalaydi."""
+    removed = len(translation_cache)
+    translation_cache.clear()
+    return removed
