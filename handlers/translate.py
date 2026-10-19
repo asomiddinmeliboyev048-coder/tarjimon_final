@@ -7,12 +7,6 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.exceptions import TelegramBadRequest
 
-from deep_translator import GoogleTranslator
-from deep_translator.exceptions import (
-    TranslationNotFound,
-    RequestError,
-    LanguageNotSupportedException
-)
 
 from config import (
     ADMIN_ID,
@@ -28,7 +22,7 @@ from keyboards.inline import (
     get_voice_keyboard
 )
 
-from services.translator import detect_language
+from services.translator import detect_language, translate_text
 from utils.voice import generate_voice
 from services.subscription import is_user_subscribed
 from utils.logger import (
@@ -54,84 +48,8 @@ text_translation_cache = {}
 
 
 # ============================================================
-# GOOGLE RATE LIMIT PROTECTION
+# HUGGING FACE NLLB TRANSLATION
 # ============================================================
-
-# Requests are deliberately serialized. This protects one running
-# process, but cannot coordinate separate Render/local instances.
-GOOGLE_REQUEST_INTERVAL = 1.5
-google_request_lock = asyncio.Lock()
-google_translation_lock = asyncio.Lock()
-last_google_request_time = 0.0
-
-
-async def wait_for_google_rate_limit():
-    """Keep a minimum interval between Google requests."""
-    global last_google_request_time
-
-    now = time.monotonic()
-    elapsed = now - last_google_request_time
-    if elapsed < GOOGLE_REQUEST_INTERVAL:
-        await asyncio.sleep(GOOGLE_REQUEST_INTERVAL - elapsed)
-
-    last_google_request_time = time.monotonic()
-
-
-async def run_google_translation(translator, text):
-    """
-    Serialize Google requests and handle rate-limit exceptions.
-    A 429/too-many-requests response gets one delayed retry only.
-    Repeated rapid retries can make provider-side blocking worse.
-    """
-    global last_google_request_time
-
-    max_attempts = 2
-    last_error = None
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            # Keep the lock for the entire network call, not only
-            # while waiting, so concurrent users cannot overlap calls.
-            async with google_translation_lock:
-                await wait_for_google_rate_limit()
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(translator.translate, text),
-                    timeout=TRANSLATION_TIMEOUT
-                )
-                last_google_request_time = time.monotonic()
-
-            return result
-
-        except asyncio.TimeoutError:
-            raise
-
-        except Exception as e:
-            last_error = e
-            error_text = str(e).lower()
-            rate_limited = (
-                "too many requests" in error_text
-                or "429" in error_text
-                or "rate limit" in error_text
-                or "too many request" in error_text
-            )
-
-            log_error(
-                f"Google translation failed "
-                f"(attempt {attempt}/{max_attempts}; "
-                f"rate_limited={rate_limited}): {e}"
-            )
-
-            if attempt >= max_attempts:
-                raise
-
-            # Wait longer for rate-limit responses; use a shorter
-            # delay for transient connection errors.
-            await asyncio.sleep(30 if rate_limited else 5)
-
-    if last_error:
-        raise last_error
-    return None
-
 
 # ============================================================
 # VOICE CALLBACK
@@ -504,8 +422,6 @@ async def handle_text_translation(
             # =================================================
 
             try:
-                await wait_for_google_rate_limit()
-
                 detected_source = await asyncio.wait_for(
                     detect_language(
                         text_input,
@@ -545,120 +461,34 @@ async def handle_text_translation(
             )
 
             # =================================================
-            # SELECT TRANSLATION TARGET
+            # TRANSLATE USING HUGGING FACE NLLB-200
             # =================================================
 
             actual_target_lang = user_language
-
-            if user_language == DEFAULT_SOURCE_LANG:
-                # Foreign -> Uzbek
-                translator = GoogleTranslator(
-                    source="auto",
-                    target=DEFAULT_SOURCE_LANG
-                )
-
-                actual_target_lang = DEFAULT_SOURCE_LANG
-
-            else:
-                # Uzbek -> selected language
-                translator = GoogleTranslator(
-                    source=DEFAULT_SOURCE_LANG,
-                    target=user_language
-                )
-
-                actual_target_lang = user_language
-
-            # =================================================
-            # TRANSLATE WITH RATE LIMIT + RETRY
-            # =================================================
-
             try:
-                result = await run_google_translation(
-                    translator,
-                    text_input
+                translation_result = await translate_text(
+                    text_input,
+                    target_lang=user_language,
+                    user_id=user_id,
+                    source_lang=detected_source,
                 )
-
+                if translation_result:
+                    result, actual_target_lang = translation_result
+                else:
+                    result = None
             except asyncio.TimeoutError:
-                log_error(
-                    "Translation timeout",
-                    user_id
-                )
-
+                log_error("Hugging Face translation timeout", user_id)
                 await loading_msg.edit_text(
                     "⏳ Tarjima juda uzoq davom etdi.\n"
                     "Iltimos, keyinroq qayta urinib ko'ring."
                 )
-
                 return
-
-            except TranslationNotFound:
-                log_error(
-                    "Translation not found",
-                    user_id
-                )
-
-                await loading_msg.edit_text(
-                    "❌ Bu matn uchun tarjima topilmadi.\n"
-                    "Iltimos, boshqa matn bilan urinib ko'ring."
-                )
-
-                return
-
-            except LanguageNotSupportedException as e:
-                log_error(
-                    f"Language not supported: {e}",
-                    user_id
-                )
-
-                await loading_msg.edit_text(
-                    "❌ Tanlangan til hozircha "
-                    "qo'llab-quvvatlanmaydi."
-                )
-
-                return
-
-            except RequestError as e:
-                log_error(
-                    f"Google translation API error "
-                    f"after retries: {e}",
-                    user_id
-                )
-
-                await loading_msg.edit_text(
-                    "🔌 Tarjima xizmati vaqtincha "
-                    "band yoki cheklangan.\n\n"
-                    "⏳ Bir necha soniyadan keyin "
-                    "qayta urinib ko'ring."
-                )
-
-                return
-
             except Exception as e:
-                log_error(
-                    f"Translation unexpected error: {e}",
-                    user_id
+                log_error(f"Hugging Face NLLB translation error: {e}", user_id)
+                await loading_msg.edit_text(
+                    "❌ Tarjima xizmati hozircha ishlamayapti yoki bepul limit tugagan.\n"
+                    "Keyinroq qayta urinib ko'ring."
                 )
-
-                error_text = str(e).lower()
-                if (
-                    "too many requests" in error_text
-                    or "429" in error_text
-                    or "rate limit" in error_text
-                    or "too many request" in error_text
-                ):
-                    user_message = (
-                        "⏳ Tarjima xizmati hozircha so'rovlarni "
-                        "cheklayapti. Iltimos, 1-2 daqiqadan keyin "
-                        "qayta urinib ko'ring."
-                    )
-                else:
-                    user_message = (
-                        "❌ Tarjimada xatolik yuz berdi.\n"
-                        "Iltimos, qayta urinib ko'ring yoki "
-                        "boshqa matn yuboring."
-                    )
-
-                await loading_msg.edit_text(user_message)
                 return
 
             # =================================================
@@ -672,7 +502,7 @@ async def handle_text_translation(
 
             if not translated_text:
                 log_error(
-                    "Google returned empty translation",
+                    "Hugging Face returned empty translation",
                     user_id
                 )
 
