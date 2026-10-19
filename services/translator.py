@@ -1,9 +1,9 @@
-from deep_translator import GoogleTranslator
-from deep_translator.exceptions import TranslationNotFound, RequestError, LanguageNotSupportedException
 from langdetect import detect, LangDetectException
 import asyncio
 import time
 import sys
+import os
+import requests
 from config import TRANSLATION_MAX_RETRIES, TRANSLATION_TIMEOUT, DEFAULT_SOURCE_LANG
 from utils.logger import log_translation, log_error
 
@@ -12,7 +12,7 @@ translation_cache = {}
 CACHE_TTL = 3600  # 1 hour
 
 # Semaphore for concurrent translation requests - increased to 40 for high concurrency
-translation_semaphore = asyncio.Semaphore(40)
+translation_semaphore = asyncio.Semaphore(1)
 
 # Performance tracking
 performance_stats = {
@@ -215,180 +215,107 @@ def _restore_technical_terms(text: str, term_map: dict) -> str:
     return text
 
 
-async def translate_text(text: str, target_lang: str, user_id: int = None) -> tuple[str, str] | None:
+HF_MODEL_ID = "facebook/nllb-200-distilled-600M"
+HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL_ID}"
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
+
+# NLLB-200 language tags. Uzbek is uzn_Latn (not the short code "uz").
+NLLB_LANG_CODES = {
+    "uz": "uzn_Latn", "uzn": "uzn_Latn",
+    "en": "eng_Latn", "ru": "rus_Cyrl", "tr": "tur_Latn",
+    "ar": "arb_Arab", "ko": "kor_Hang",
+}
+
+
+def _hf_nllb_request(text: str, source_code: str, target_code: str) -> str:
+    """Call Hugging Face's hosted inference router. Requires HF_TOKEN."""
+    if not HF_TOKEN:
+        raise RuntimeError("HF_TOKEN Render Environment variable sozlanmagan")
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "src_lang": source_code,
+            "tgt_lang": target_code,
+            "max_new_tokens": 512,
+        },
+        "options": {"wait_for_model": True},
+    }
+    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=90)
+    if response.status_code >= 400:
+        # Don't log or expose the secret token.
+        raise RuntimeError(f"Hugging Face API HTTP {response.status_code}: {response.text[:300]}")
+    data = response.json()
+    if isinstance(data, list) and data:
+        item = data[0]
+        if isinstance(item, dict):
+            result = item.get("translation_text") or item.get("generated_text")
+            if result:
+                return str(result).strip()
+    if isinstance(data, dict):
+        result = data.get("translation_text") or data.get("generated_text")
+        if result:
+            return str(result).strip()
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+    raise RuntimeError(f"Unexpected Hugging Face response: {str(data)[:250]}")
+
+
+async def translate_text(text: str, target_lang: str, user_id: int = None, source_lang: str = None) -> tuple[str, str] | None:
+    """Translate with NLLB-200 via Hugging Face Inference API.
+
+    If selected target is Uzbek, translate foreign text to Uzbek.
+    Otherwise translate Uzbek to the selected language.
+    Returns (translated_text, actual_target_short_code).
     """
-    Translate text using automatic source language detection with optimizations.
-
-    If the incoming text is Uzbek, it is translated into the user's selected foreign language.
-    If the incoming text is non-Uzbek, it is translated into Uzbek.
-    
-    Features:
-    - Slang/dialect normalization for Uzbek
-    - Technical term preservation
-    - Async translation with asyncio.to_thread
-    - Comprehensive error handling
-    - Performance monitoring
-
-    Args:
-        text: Text to translate
-        target_lang: User-selected foreign language code
-        user_id: Optional user ID for logging
-
-    Returns:
-        Tuple of (translated_text, actual_target_lang) or None if translation failed
-    """
-    global performance_stats
-    start_time = time.time()
-    
-    # Update total requests counter
-    performance_stats['total_requests'] += 1
-    
-    async with translation_semaphore:
-        if not isinstance(text, str):
-            text = str(text)
-
-        text = text.strip()
-        if not text:
-            return None
-
-        if target_lang not in SUPPORTED_LANGUAGES:
-            log_error(f"Unsupported target language: {target_lang}", user_id)
-            return None
-
-        # Normalize Uzbek slang before translation
-        source_lang = await detect_language(text, user_id)
-        if source_lang == DEFAULT_SOURCE_LANG:
-            text = normalize_uzbek_text(text)
-
-        if target_lang == DEFAULT_SOURCE_LANG:
-            if source_lang == DEFAULT_SOURCE_LANG:
-                log_error("Selected Uzbek while input is Uzbek: no translation needed", user_id)
-                return None
-            destination_lang = DEFAULT_SOURCE_LANG
-        else:
-            destination_lang = target_lang if source_lang == DEFAULT_SOURCE_LANG else DEFAULT_SOURCE_LANG
-
-        # Preserve technical terms before translation
-        modified_text, term_map = _preserve_technical_terms(text)
-
-        cache_key = _get_cache_key(modified_text, destination_lang)
-        if cache_key in translation_cache:
-            cache_entry = translation_cache[cache_key]
-            if time.time() - cache_entry['timestamp'] < CACHE_TTL:
-                translated_text = cache_entry['result']
-                # Restore technical terms
-                translated_text = _restore_technical_terms(translated_text, term_map)
-                duration = time.time() - start_time
-                # Update performance stats for cached request
-                performance_stats['cached_requests'] += 1
-                performance_stats['successful_requests'] += 1
-                # Update average response time
-                prev_avg = performance_stats['avg_response_time']
-                total_success = performance_stats['successful_requests']
-                performance_stats['avg_response_time'] = (prev_avg * (total_success - 1) + duration) / total_success
-                log_translation(user_id or 0, source_lang, destination_lang, True, duration=duration, cached=True)
-                return translated_text, destination_lang
-            else:
-                del translation_cache[cache_key]
-
-        last_error = None
-        for attempt in range(TRANSLATION_MAX_RETRIES):
-            try:
-                # Use auto source detection in the translator to avoid echo when our heuristic misclassifies the language.
-                translator = GoogleTranslator(source='auto', target=destination_lang)
-                
-                # Use asyncio.to_thread for Python 3.9+ (better performance) or fallback to run_in_executor
-                if sys.version_info >= (3, 9):
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(translator.translate, modified_text),
-                        timeout=TRANSLATION_TIMEOUT
-                    )
-                else:
-                    loop = asyncio.get_event_loop()
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(None, translator.translate, modified_text),
-                        timeout=TRANSLATION_TIMEOUT
-                    )
-
-                if result and isinstance(result, str) and result.strip():
-                    translated_text = result.strip()
-                    # Restore technical terms
-                    translated_text = _restore_technical_terms(translated_text, term_map)
-                    _add_to_cache(cache_key, translated_text)
-                    duration = time.time() - start_time
-                    # Update performance stats for successful request
-                    performance_stats['successful_requests'] += 1
-                    # Update average response time
-                    prev_avg = performance_stats['avg_response_time']
-                    total_success = performance_stats['successful_requests']
-                    performance_stats['avg_response_time'] = (prev_avg * (total_success - 1) + duration) / total_success
-                    log_translation(user_id or 0, source_lang, destination_lang, True, duration=duration, cached=False)
-                    return translated_text, destination_lang
-
-            except asyncio.TimeoutError:
-                last_error = f"Timeout on attempt {attempt + 1}"
-                log_error(f"Translation timeout (attempt {attempt + 1})", user_id)
-
-            except TranslationNotFound:
-                last_error = "Tarjima topilmadi"
-                log_error("Translation not found", user_id)
-                return None
-
-            except (RequestError, LanguageNotSupportedException) as e:
-                last_error = f"API xatosi: {e}"
-                log_error(f"Translation API error: {e}", user_id)
-
-            except Exception as e:
-                last_error = f"Kutilmagan xato: {e}"
-                log_error(f"Translation unexpected error: {e}", user_id)
-
-            if attempt < TRANSLATION_MAX_RETRIES - 1:
-                wait_time = min(2 ** attempt, 8)
-                await asyncio.sleep(wait_time)
-
-        duration = time.time() - start_time
-        # Update performance stats for failed request
-        performance_stats['failed_requests'] += 1
-        log_error(f"Translation failed after {TRANSLATION_MAX_RETRIES} attempts: {last_error}", user_id)
-        log_translation(user_id or 0, source_lang, destination_lang, False, duration=duration)
+    if not isinstance(text, str):
+        text = str(text)
+    text = text.strip()
+    if not text or target_lang not in SUPPORTED_LANGUAGES:
         return None
 
+    detected = (source_lang or await detect_language(text, user_id) or DEFAULT_SOURCE_LANG).lower()
+    if detected not in NLLB_LANG_CODES:
+        # langdetect can guess unsupported languages; bot's common workflow assumes Uzbek source.
+        detected = DEFAULT_SOURCE_LANG
 
-def clear_translation_cache():
-    """Clear the translation cache"""
-    global translation_cache
-    translation_cache = {}
+    if target_lang == DEFAULT_SOURCE_LANG:
+        if detected == DEFAULT_SOURCE_LANG:
+            # If detector is uncertain, still allow an attempt only when text isn't obviously Uzbek.
+            return None
+        destination = DEFAULT_SOURCE_LANG
+    else:
+        destination = target_lang if detected == DEFAULT_SOURCE_LANG else DEFAULT_SOURCE_LANG
 
+    src_code = NLLB_LANG_CODES.get(detected)
+    tgt_code = NLLB_LANG_CODES.get(destination)
+    if not src_code or not tgt_code:
+        raise RuntimeError(f"NLLB language mapping missing: {detected}->{destination}")
+    if src_code == tgt_code:
+        return None
 
-def get_cache_stats():
-    """Get cache statistics"""
-    current_time = time.time()
-    valid_entries = sum(1 for entry in translation_cache.values() if current_time - entry['timestamp'] < CACHE_TTL)
-    return {
-        "size": len(translation_cache),
-        "valid_entries": valid_entries,
-        "ttl_seconds": CACHE_TTL
-    }
+    key = _get_cache_key(text, destination)
+    cached = translation_cache.get(key)
+    if cached and time.time() - cached.get("timestamp", 0) < CACHE_TTL:
+        performance_stats["cached_requests"] += 1
+        return cached["result"], destination
 
+    start = time.time()
+    async with translation_semaphore:
+        # Keep concurrency low to avoid exhausting free inference quota.
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_hf_nllb_request, text, src_code, tgt_code),
+            timeout=TRANSLATION_TIMEOUT + 15,
+        )
 
-def get_performance_stats():
-    """Get performance statistics for monitoring"""
-    total = performance_stats['total_requests']
-    success = performance_stats['successful_requests']
-    failed = performance_stats['failed_requests']
-    cached = performance_stats['cached_requests']
-    
-    success_rate = (success / total * 100) if total > 0 else 0
-    cache_hit_rate = (cached / total * 100) if total > 0 else 0
-    
-    return {
-        "total_requests": total,
-        "successful_requests": success,
-        "failed_requests": failed,
-        "cached_requests": cached,
-        "success_rate_percent": round(success_rate, 2),
-        "cache_hit_rate_percent": round(cache_hit_rate, 2),
-        "avg_response_time_seconds": round(performance_stats['avg_response_time'], 3),
-        "concurrent_limit": 40,
-        "current_concurrent": 40 - translation_semaphore._value if hasattr(translation_semaphore, '_value') else 'N/A'
-    }
+    if not result:
+        raise RuntimeError("Hugging Face returned an empty translation")
+    _add_to_cache(key, result)
+    performance_stats["total_requests"] += 1
+    performance_stats["successful_requests"] += 1
+    duration = time.time() - start
+    prev = performance_stats["avg_response_time"]
+    successes = performance_stats["successful_requests"]
+    performance_stats["avg_response_time"] = (prev * (successes - 1) + duration) / successes
+    log_translation(user_id or 0, detected, destination, True, duration=duration, cached=False)
+    return result, destination
