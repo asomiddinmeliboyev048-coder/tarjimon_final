@@ -477,14 +477,14 @@ async def handle_text_translation(
                 else:
                     result = None
             except asyncio.TimeoutError:
-                log_error("Hugging Face translation timeout", user_id)
+                log_error("Google Translate timeout", user_id)
                 await loading_msg.edit_text(
                     "⏳ Tarjima juda uzoq davom etdi.\n"
                     "Iltimos, keyinroq qayta urinib ko'ring."
                 )
                 return
             except Exception as e:
-                log_error(f"Hugging Face NLLB translation error: {e}", user_id)
+                log_error(f"Google Translate library error: {e}", user_id)
                 await loading_msg.edit_text(
                     "❌ Tarjima xizmati hozircha ishlamayapti yoki bepul limit tugagan.\n"
                     "Keyinroq qayta urinib ko'ring."
