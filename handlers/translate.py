@@ -461,7 +461,7 @@ async def handle_text_translation(
             )
 
             # =================================================
-            # TRANSLATE USING HUGGING FACE NLLB-200
+            # TRANSLATE USING FREE GOOGLE TRANSLATE WITH FALLBACK
             # =================================================
 
             actual_target_lang = user_language
@@ -502,7 +502,7 @@ async def handle_text_translation(
 
             if not translated_text:
                 log_error(
-                    "Hugging Face returned empty translation",
+                    "All translation providers returned an empty translation",
                     user_id
                 )
 
