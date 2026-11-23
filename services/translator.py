@@ -319,3 +319,26 @@ async def translate_text(text: str, target_lang: str, user_id: int = None, sourc
     performance_stats["avg_response_time"] = (prev * (successes - 1) + duration) / successes
     log_translation(user_id or 0, detected, destination, True, duration=duration, cached=False)
     return result, destination
+
+
+def get_cache_stats() -> dict:
+    """Return translation cache statistics."""
+    now = time.time()
+    valid_entries = sum(
+        1
+        for item in translation_cache.values()
+        if isinstance(item, dict)
+        and now - item.get("timestamp", 0) < CACHE_TTL
+    )
+    return {
+        **performance_stats,
+        "cache_size": valid_entries,
+        "cache_ttl_seconds": CACHE_TTL,
+    }
+
+
+def clear_translation_cache() -> int:
+    """Clear the in-memory translation cache and return removed item count."""
+    removed = len(translation_cache)
+    translation_cache.clear()
+    return removed
