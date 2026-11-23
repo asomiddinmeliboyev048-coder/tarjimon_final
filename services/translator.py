@@ -12,7 +12,7 @@ translation_cache = {}
 CACHE_TTL = 3600  # 1 hour
 
 # Semaphore for concurrent translation requests - increased to 40 for high concurrency
-translation_semaphore = asyncio.Semaphore(40)
+translation_semaphore = asyncio.Semaphore(1)
 
 # Performance tracking
 performance_stats = {
@@ -294,6 +294,8 @@ async def translate_text(text: str, target_lang: str, user_id: int = None, sourc
         last_error = None
         for attempt in range(TRANSLATION_MAX_RETRIES):
             try:
+                # Google web translation endpointini ortiqcha so'rov bilan bosmaslik.
+                await asyncio.sleep(0.8)
                 # Use auto source detection in the translator to avoid echo when our heuristic misclassifies the language.
                 translator = GoogleTranslator(source='auto', target=destination_lang)
                 
