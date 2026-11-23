@@ -1,4 +1,4 @@
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from deep_translator.exceptions import TranslationNotFound, RequestError, LanguageNotSupportedException
 from langdetect import detect, LangDetectException
 import asyncio
@@ -292,6 +292,7 @@ async def translate_text(text: str, target_lang: str, user_id: int = None, sourc
                 del translation_cache[cache_key]
 
         last_error = None
+        google_rate_limited = False
         for attempt in range(TRANSLATION_MAX_RETRIES):
             try:
                 # Google web translation endpointini ortiqcha so'rov bilan bosmaslik.
@@ -341,12 +342,39 @@ async def translate_text(text: str, target_lang: str, user_id: int = None, sourc
                 log_error(f"Translation API error: {e}", user_id)
 
             except Exception as e:
-                last_error = f"Kutilmagan xato: {e}"
-                log_error(f"Translation unexpected error: {e}", user_id)
+                error_text = str(e)
+                last_error = f"Kutilmagan xato: {error_text}"
+                log_error(f"Translation unexpected error: {error_text}", user_id)
+                if "too many requests" in error_text.lower() or "429" in error_text:
+                    google_rate_limited = True
+                    log_error("Google Translate rate limit reached; switching to MyMemory fallback", user_id)
+                    break
 
             if attempt < TRANSLATION_MAX_RETRIES - 1:
                 wait_time = min(2 ** attempt, 8)
                 await asyncio.sleep(wait_time)
+
+        # Google rate limit bo'lsa, bepul MyMemory xizmatini zaxira sifatida sinab ko'ramiz.
+        if google_rate_limited:
+            try:
+                fallback = MyMemoryTranslator(source='auto', target=destination_lang)
+                fallback_result = await asyncio.wait_for(
+                    asyncio.to_thread(fallback.translate, modified_text),
+                    timeout=TRANSLATION_TIMEOUT
+                )
+                if fallback_result and isinstance(fallback_result, str) and fallback_result.strip():
+                    translated_text = _restore_technical_terms(fallback_result.strip(), term_map)
+                    _add_to_cache(cache_key, translated_text)
+                    duration = time.time() - start_time
+                    performance_stats['successful_requests'] += 1
+                    prev_avg = performance_stats['avg_response_time']
+                    total_success = performance_stats['successful_requests']
+                    performance_stats['avg_response_time'] = (prev_avg * (total_success - 1) + duration) / total_success
+                    log_translation(user_id or 0, source_lang, destination_lang, True, duration=duration, cached=False)
+                    log_error("Translation completed using MyMemory fallback", user_id)
+                    return translated_text, destination_lang
+            except Exception as fallback_error:
+                log_error(f"MyMemory fallback failed: {fallback_error}", user_id)
 
         duration = time.time() - start_time
         # Update performance stats for failed request
